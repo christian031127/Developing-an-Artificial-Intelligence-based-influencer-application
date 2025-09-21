@@ -30,3 +30,7 @@ uploads/
 # Env files
 .env
 *.env.local
+
+# Mongo data & uploads (DO NOT COMMIT)
+mongodb-data/
+uploads
