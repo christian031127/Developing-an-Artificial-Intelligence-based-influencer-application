@@ -1,0 +1,32 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.parcel-cache/
+frontend/.eslintcache
+
+# Python / backend
+backend/__pycache__/
+backend/*.pyc
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.venv/
+backend/.env
+
+# Docker / infra
+infra/*.log
+infra/data/
+uploads/
+
+# VSCode / IDE
+.vscode/
+.idea/
+*.swp
+
+# Env files
+.env
+*.env.local

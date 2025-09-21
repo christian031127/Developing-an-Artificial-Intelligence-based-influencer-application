@@ -2,7 +2,15 @@
 name = "aiinfl-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
+
 dependencies = [
   "fastapi==0.115.0",
   "uvicorn[standard]==0.30.6",
+  "pydantic==2.8.2",
+  "pydantic-settings==2.4.0",
+  "pymongo==4.8.0",
+  "Pillow==10.4.0",    # placeholder image
+  "httpx==0.27.2",     # caption LLM (ai_text)
+  "pytrends==4.9.2",   # Google Trends
+  "pandas==2.2.2",     # pytrends needs pandas
 ]
