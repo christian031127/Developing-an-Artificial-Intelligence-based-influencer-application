@@ -21,7 +21,8 @@ export const api = {
   regenCaption: (id) =>
     fetch(`${BASE}/api/drafts/${id}/regen_caption`, { method: "POST" }).then(json),
 
-  // NEW: Trends
+  getAnalytics: () => fetch(`${BASE}/api/analytics`).then(json),
+
   getTrends: ({ geo = "HU", window = "90d", seed } = {}) => {
     const params = new URLSearchParams({ geo, window });
     if (seed && seed.length) params.set("seed", seed.join(","));

@@ -191,41 +191,59 @@ async def regen_caption(draft_id: str):
 # ---------- Analytics (MVP) ----------
 from datetime import datetime, timedelta
 
+def _last_days(n: int = 7):
+    today = datetime.utcnow().date()
+    days = []
+    for i in range(n-1, -1, -1):
+        d = today - timedelta(days=i)
+        days.append(d.strftime("%Y-%m-%d"))
+    return days
+
 @app.get("/api/analytics")
 def analytics():
     """
-    Returns simple content stats computed from drafts:
-    - totals by category
-    - totals by status
-    - drafts created per day (last 7 days)
+    Always returns usable data:
+    - totals by category (workout/meal/lifestyle) with zeros
+    - totals by status (draft/approved) with zeros
+    - drafts created per day for the last 7 days (zeros included)
     """
+    CATS = ["workout", "meal", "lifestyle"]
+    STAT = ["draft", "approved"]
+
     # by category
-    by_cat = list(db.drafts.aggregate([
+    by_cat_raw = list(db.drafts.aggregate([
         {"$group": {"_id": "$category", "count": {"$sum": 1}}},
-        {"$project": {"category": "$_id", "_id": 0, "count": 1}},
-        {"$sort": {"category": 1}}
+        {"$project": {"category": "$_id", "_id": 0, "count": 1}}
     ]))
+    by_cat_map = {x["category"]: x["count"] for x in by_cat_raw}
+    by_cat = [{"category": c, "count": by_cat_map.get(c, 0)} for c in CATS]
 
     # by status
-    by_status = list(db.drafts.aggregate([
+    by_status_raw = list(db.drafts.aggregate([
         {"$group": {"_id": "$status", "count": {"$sum": 1}}},
-        {"$project": {"status": "$_id", "_id": 0, "count": 1}},
-        {"$sort": {"status": 1}}
+        {"$project": {"status": "$_id", "_id": 0, "count": 1}}
     ]))
+    by_status_map = {x["status"]: x["count"] for x in by_status_raw}
+    by_status = [{"status": s, "count": by_status_map.get(s, 0)} for s in STAT]
 
-    # per-day (last 7 days)
+    # per day (last 7 days); build zero-filled series first
+    day_keys = _last_days(7)
+    per_day_map = {k: 0 for k in day_keys}
     since = datetime.utcnow() - timedelta(days=6)
-    per_day = list(db.drafts.aggregate([
+    per_day_raw = list(db.drafts.aggregate([
         {"$match": {"_id": {"$gte": ObjectId.from_datetime(since)}}},
         {"$group": {
             "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": {"$toDate": "$_id"}}},
             "count": {"$sum": 1}
         }},
-        {"$project": {"day": "$_id", "_id": 0, "count": 1}},
-        {"$sort": {"day": 1}}
+        {"$project": {"day": "$_id", "_id": 0, "count": 1}}
     ]))
+    for row in per_day_raw:
+        if row["day"] in per_day_map:
+            per_day_map[row["day"]] = row["count"]
+    per_day = [{"day": k, "count": per_day_map[k]} for k in day_keys]
 
-    total = sum(x["count"] for x in by_cat) if by_cat else 0
+    total = sum(x["count"] for x in by_cat)
 
     return {
         "total": total,
@@ -241,12 +259,18 @@ def trends(
     window: str = Query(default=settings.TRENDS_WINDOW, pattern="^(7d|30d|90d)$"),
     seed: Optional[str] = Query(default=None, description="Comma-separated seed terms")
 ):
-    """
-    Returns trending keywords for chips: { geo, window, keywords[], fetchedAt }
-    Cache: 24h (Mongo TTL). Seed can be CSV; falls back to DEFAULT_SEED.
-    """
     seed_terms = [s.strip() for s in (seed.split(",") if seed else _DEFAULT_SEED) if s.strip()]
-    return get_trends(geo=geo, window=window, seed=seed_terms)
+    try:
+        return get_trends(geo=geo, window=window, seed=seed_terms)
+    except Exception:
+        # graceful fallback: return seeds as "keywords"
+        return {
+            "geo": geo,
+            "window": window,
+            "keywords": seed_terms[:20],
+            "fetchedAt": datetime.utcnow().isoformat() + "Z",
+            "note": "fallback: pytrends unavailable"
+        }
 
 # ---------- Drafts ----------
 @app.post("/api/drafts", response_model=Draft)
