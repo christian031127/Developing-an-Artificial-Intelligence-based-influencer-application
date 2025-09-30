@@ -7,6 +7,7 @@ from app.core.files import UPLOAD_DIR  # biztosítja, hogy a /app/uploads létez
 # Routers
 from app.api.routes.health import router as health_router
 from app.api.routes.personas import router as personas_router
+from app.api.routes.personas_db import router as personas_db_router
 from app.api.routes.drafts import router as drafts_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.trends import router as trends_router
@@ -33,3 +34,4 @@ app.include_router(drafts_router, prefix="/api", tags=["drafts"])
 app.include_router(analytics_router, prefix="/api", tags=["analytics"])
 app.include_router(trends_router, prefix="/api", tags=["trends"])
 app.include_router(characters_router, prefix="/api", tags=["characters"])
+app.include_router(personas_db_router, prefix="/api")

@@ -13,13 +13,11 @@ from bson import ObjectId
 from app.core.settings import settings
 from app.core.db import db
 from app.core.files import UPLOAD_DIR
-from app.services.persona_registry import get_persona
 from app.services.images.composite import render_composite
 from app.services.ai_text import gen_caption_and_tags
 
-router = APIRouter()
+router = APIRouter(tags=["drafts"])
 
-# ---------- Schemas ----------
 class Idea(BaseModel):
     id: str
     title: str
@@ -31,10 +29,9 @@ class DraftCreate(BaseModel):
     category: Literal["workout","meal","lifestyle"] = "lifestyle"
     caption: str = ""
     hashtags: List[str] = Field(default_factory=list)
-    style: Optional[str] = None
     customText: Optional[str] = None
-    personaId: Optional[str] = None
     imageStyle: Optional[str] = None
+    personaId: str  # <<< KÖTELEZŐ
 
 class Draft(DraftCreate):
     id: str
@@ -46,7 +43,6 @@ def _serialize(doc: dict) -> dict:
     doc["id"] = str(doc.pop("_id"))
     return doc
 
-# ---------- Sample ideas ----------
 @router.get("/ideas", response_model=List[Idea])
 def list_ideas():
     return [
@@ -55,37 +51,47 @@ def list_ideas():
         {"id": "i3", "title": "Active rest day walk", "category": "lifestyle"},
     ]
 
-# ---------- Drafts ----------
 @router.get("/drafts", response_model=List[Draft])
 def get_drafts():
     return [_serialize(d) for d in db.drafts.find().sort("_id", -1)]
 
+def _load_persona_or_404(persona_id: str) -> dict:
+    try:
+        p = db.personas.find_one({"_id": ObjectId(persona_id)})
+    except Exception:
+        p = None
+    if not p:
+        raise HTTPException(400, "personaId is invalid or not found")
+    return p
+
 @router.post("/drafts", response_model=Draft)
 async def create_draft(body: DraftCreate):
-    # 1) Caption & hashtags (AI with optional customText → fallback)
+    persona = _load_persona_or_404(body.personaId)
+
+    # 1) caption + hashtags (AI → fallback), tone + brand_tag a personából
     caption = (body.caption or "").strip()
     hashtags = list(body.hashtags or [])
     if not caption or not hashtags:
         try:
-            try:
-                cap, tags = await gen_caption_and_tags(
-                    topic=body.title, category=body.category, brand_tag="fitai", custom_text=body.customText
-                )
-            except TypeError:
-                cap, tags = await gen_caption_and_tags(
-                    topic=body.title, category=body.category, brand_tag="fitai"
-                )
+            tone = persona.get("tone") or "friendly, concise"
+            brand_tag = persona.get("brand_tag") or "brand"
+            # a korábbi gen_caption_and_tags signature-e maradhat
+            cap, tags = await gen_caption_and_tags(
+                topic=body.title,
+                category=body.category,
+                brand_tag=brand_tag,
+                custom_text=body.customText or tone
+            )
             caption = caption or cap
             hashtags = hashtags or tags
         except Exception:
             caption = caption or "Save this for later! 💡"
-            hashtags = hashtags or ["fitai","lifestyle","inspo","daily","post","content","ideas","trending","today","tips"]
+            hashtags = hashtags or ["post","daily","ideas","trending"]
 
-    # 2) Image: composite (free)
-    persona = get_persona(body.personaId or "")
-    watermark = (persona.visual.get("watermark") if persona else "AI Studio")
-    style = (body.imageStyle or body.style or "clean")
-    subtitle = "#" + (hashtags[0] if hashtags else (persona.brand_tag if persona else "fitai"))
+    # 2) kép (composite – olcsó)
+    style = (body.imageStyle or persona.get("default_image_style") or "clean")
+    watermark = (persona.get("watermark") or persona.get("name") or "Studio")
+    subtitle = "#" + (hashtags[0] if hashtags else (persona.get("brand_tag") or "brand"))
     img_bytes = render_composite(style, title=body.title, subtitle=subtitle, watermark=watermark)
 
     fname = f"{uuid4()}.jpg"
@@ -93,7 +99,6 @@ async def create_draft(body: DraftCreate):
     with open(out_path, "wb") as f:
         f.write(img_bytes)
 
-    # 3) Persist
     doc = body.model_dump()
     doc.update({
         "caption": caption,
@@ -107,10 +112,12 @@ async def create_draft(body: DraftCreate):
 
 @router.patch("/drafts/{draft_id}", response_model=Draft)
 def patch_draft(draft_id: str, body: dict):
-    allowed = {"imageStyle","personaId","caption","hashtags","title","category","style","customText"}
+    allowed = {"imageStyle","personaId","caption","hashtags","title","category","customText"}
     update = {k:v for k,v in (body or {}).items() if k in allowed}
     if not update:
         raise HTTPException(400, "No updatable fields provided")
+    if "personaId" in update:
+        _load_persona_or_404(update["personaId"])  # validáljuk
     doc = db.drafts.find_one_and_update(
         {"_id": ObjectId(draft_id)}, {"$set": update}, return_document=True
     )
@@ -175,20 +182,22 @@ async def regen_caption(draft_id: str):
     d = db.drafts.find_one({"_id": ObjectId(draft_id)})
     if not d:
         raise HTTPException(404, "Draft not found")
+
+    persona = _load_persona_or_404(d.get("personaId"))
+    tone = persona.get("tone") or "friendly, concise"
+    brand_tag = persona.get("brand_tag") or "brand"
+
     try:
-        try:
-            cap, tags = await gen_caption_and_tags(
-                topic=d.get("title",""), category=d.get("category","lifestyle"),
-                brand_tag="fitai", custom_text=d.get("customText","")
-            )
-        except TypeError:
-            cap, tags = await gen_caption_and_tags(
-                topic=d.get("title",""), category=d.get("category","lifestyle"),
-                brand_tag="fitai"
-            )
+        cap, tags = await gen_caption_and_tags(
+            topic=d.get("title",""),
+            category=d.get("category","lifestyle"),
+            brand_tag=brand_tag,
+            custom_text=d.get("customText") or tone
+        )
     except Exception:
         cap = (d.get("title") or "New post") + " — save it!"
-        tags = d.get("hashtags") or ["fitai"]
+        tags = d.get("hashtags") or [brand_tag]
+
     doc = db.drafts.find_one_and_update(
         {"_id": ObjectId(draft_id)}, {"$set": {"caption": cap, "hashtags": tags}}, return_document=True
     )
@@ -200,15 +209,13 @@ async def regen_image(draft_id: str):
     if not d:
         raise HTTPException(404, "Draft not found")
 
-    persona = get_persona(d.get("personaId","") or "")
-    watermark = (persona.visual.get("watermark") if persona else "AI Studio")
-    style = d.get("imageStyle") or d.get("style") or "clean"
-    subtitle = "#" + (d.get("hashtags",[None])[0] or (persona.brand_tag if persona else "fitai"))
+    persona = _load_persona_or_404(d.get("personaId"))
+    style = d.get("imageStyle") or persona.get("default_image_style") or "clean"
+    watermark = persona.get("watermark") or persona.get("name") or "Studio"
+    subtitle = "#" + (d.get("hashtags",[None])[0] or (persona.get("brand_tag") or "brand"))
 
-    # render new
     img_bytes = render_composite(style, title=d.get("title",""), subtitle=subtitle, watermark=watermark)
 
-    # remove old file
     old = d.get("filename")
     if old:
         old_path = os.path.join(UPLOAD_DIR, old)

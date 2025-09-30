@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import Layout from "./layout";
 import Dashboard from "../pages/Dashboard";
 import Analytics from "../pages/Analytics";
-import Characters from "../pages/Characters";
+//import Characters from "../pages/Characters";
+import Personas from "../pages/Personas";
 import { api } from "../lib/api";
 
 export default function AppRoutes() {
@@ -17,7 +18,7 @@ export default function AppRoutes() {
     <Layout page={page} onNavigate={setPage}>
       {page === "dashboard" && <Dashboard health={health} />}
       {page === "analytics" && <Analytics />}
-      {page === "characters" && <Characters />}
+      {page === "personas" && <Personas />}
     </Layout>
   );
 }

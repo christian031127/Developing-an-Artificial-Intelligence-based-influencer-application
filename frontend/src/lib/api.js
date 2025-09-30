@@ -32,9 +32,6 @@ export const api = {
   // analytics
   getAnalytics: () => fetch(`${BASE}/api/analytics`).then(json),
 
-  // personas
-  getPersonas: () => fetch(`${BASE}/api/personas`).then(json),
-
   // characters
 getCharacters: () => fetch(`${BASE}/api/characters`).then(json),
 
@@ -58,6 +55,11 @@ deleteCharacter: (id) =>
     if (seed && seed.length) params.set("seed", seed.join(","));
     return fetch(`${BASE}/api/trends?${params}`).then(json);
   },
+
+  getPersonas: () => fetch(`${BASE}/api/personas`).then(json),
+  createPersona: (formData) => fetch(`${BASE}/api/personas`, { method:"POST", body: formData }).then(json),
+  updatePersona: (id, patch) => fetch(`${BASE}/api/personas/${id}`, { method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(patch) }).then(json),
+  deletePersona: (id) => fetch(`${BASE}/api/personas/${id}`, { method:"DELETE" }).then(json),
 
   // batch create from keywords
   createDraftsFromKeywords: async ({ keywords = [], customText = "", personaId = "", imageStyle = "clean" }) => {
