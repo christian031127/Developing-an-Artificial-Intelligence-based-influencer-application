@@ -1,16 +1,24 @@
-[project]
-name = "aiinfl-backend"
-version = "0.1.0"
-requires-python = ">=3.12"
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
+[project]
+name = "ai-influencer-backend"
+version = "0.1.0"
+description = "FastAPI backend for AI Influencer"
+requires-python = ">=3.12"
 dependencies = [
-  "fastapi==0.115.0",
-  "uvicorn[standard]==0.30.6",
-  "pydantic==2.8.2",
-  "pydantic-settings==2.4.0",
-  "pymongo==4.8.0",
-  "Pillow==10.4.0",    # placeholder image
-  "httpx==0.27.2",     # caption LLM (ai_text)
-  "pytrends==4.9.2",   # Google Trends
-  "pandas==2.2.2",     # pytrends needs pandas
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.30",
+  "motor>=3.3",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "httpx>=0.27",
+  "Pillow>=10.3",
+  "pytrends>=4.9",
+  "python-multipart>=0.0.9"
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

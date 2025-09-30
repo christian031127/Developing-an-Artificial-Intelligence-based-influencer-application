@@ -1,0 +1,229 @@
+import os
+from io import BytesIO
+from zipfile import ZipFile
+from uuid import uuid4
+from typing import List, Optional, Literal
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from bson import ObjectId
+
+from app.core.settings import settings
+from app.core.db import db
+from app.core.files import UPLOAD_DIR
+from app.services.persona_registry import get_persona
+from app.services.images.composite import render_composite
+from app.services.ai_text import gen_caption_and_tags
+
+router = APIRouter()
+
+# ---------- Schemas ----------
+class Idea(BaseModel):
+    id: str
+    title: str
+    category: Literal["workout", "meal", "lifestyle"]
+
+class DraftCreate(BaseModel):
+    ideaId: Optional[str] = None
+    title: str
+    category: Literal["workout","meal","lifestyle"] = "lifestyle"
+    caption: str = ""
+    hashtags: List[str] = Field(default_factory=list)
+    style: Optional[str] = None
+    customText: Optional[str] = None
+    personaId: Optional[str] = None
+    imageStyle: Optional[str] = None
+
+class Draft(DraftCreate):
+    id: str
+    status: Literal["draft","approved"] = "draft"
+    previewUrl: Optional[str] = None
+    filename: Optional[str] = None
+
+def _serialize(doc: dict) -> dict:
+    doc["id"] = str(doc.pop("_id"))
+    return doc
+
+# ---------- Sample ideas ----------
+@router.get("/ideas", response_model=List[Idea])
+def list_ideas():
+    return [
+        {"id": "i1", "title": "Leg day routine", "category": "workout"},
+        {"id": "i2", "title": "High-protein breakfast bowl", "category": "meal"},
+        {"id": "i3", "title": "Active rest day walk", "category": "lifestyle"},
+    ]
+
+# ---------- Drafts ----------
+@router.get("/drafts", response_model=List[Draft])
+def get_drafts():
+    return [_serialize(d) for d in db.drafts.find().sort("_id", -1)]
+
+@router.post("/drafts", response_model=Draft)
+async def create_draft(body: DraftCreate):
+    # 1) Caption & hashtags (AI with optional customText → fallback)
+    caption = (body.caption or "").strip()
+    hashtags = list(body.hashtags or [])
+    if not caption or not hashtags:
+        try:
+            try:
+                cap, tags = await gen_caption_and_tags(
+                    topic=body.title, category=body.category, brand_tag="fitai", custom_text=body.customText
+                )
+            except TypeError:
+                cap, tags = await gen_caption_and_tags(
+                    topic=body.title, category=body.category, brand_tag="fitai"
+                )
+            caption = caption or cap
+            hashtags = hashtags or tags
+        except Exception:
+            caption = caption or "Save this for later! 💡"
+            hashtags = hashtags or ["fitai","lifestyle","inspo","daily","post","content","ideas","trending","today","tips"]
+
+    # 2) Image: composite (free)
+    persona = get_persona(body.personaId or "")
+    watermark = (persona.visual.get("watermark") if persona else "AI Studio")
+    style = (body.imageStyle or body.style or "clean")
+    subtitle = "#" + (hashtags[0] if hashtags else (persona.brand_tag if persona else "fitai"))
+    img_bytes = render_composite(style, title=body.title, subtitle=subtitle, watermark=watermark)
+
+    fname = f"{uuid4()}.jpg"
+    out_path = os.path.join(UPLOAD_DIR, fname)
+    with open(out_path, "wb") as f:
+        f.write(img_bytes)
+
+    # 3) Persist
+    doc = body.model_dump()
+    doc.update({
+        "caption": caption,
+        "hashtags": hashtags,
+        "status": "draft",
+        "filename": fname,
+        "previewUrl": f"{settings.BASE_URL}/uploads/{fname}",
+    })
+    res = db.drafts.insert_one(doc)
+    return Draft(id=str(res.inserted_id), **doc)
+
+@router.patch("/drafts/{draft_id}", response_model=Draft)
+def patch_draft(draft_id: str, body: dict):
+    allowed = {"imageStyle","personaId","caption","hashtags","title","category","style","customText"}
+    update = {k:v for k,v in (body or {}).items() if k in allowed}
+    if not update:
+        raise HTTPException(400, "No updatable fields provided")
+    doc = db.drafts.find_one_and_update(
+        {"_id": ObjectId(draft_id)}, {"$set": update}, return_document=True
+    )
+    if not doc:
+        raise HTTPException(404, "Draft not found")
+    return Draft(**_serialize(doc))
+
+@router.post("/drafts/{draft_id}/approve", response_model=Draft)
+def approve_draft(draft_id: str):
+    doc = db.drafts.find_one_and_update(
+        {"_id": ObjectId(draft_id)}, {"$set": {"status": "approved"}}, return_document=True
+    )
+    if not doc:
+        raise HTTPException(404, "Draft not found")
+    return Draft(**_serialize(doc))
+
+@router.delete("/drafts/{draft_id}")
+def delete_draft(draft_id: str):
+    ok = db.drafts.delete_one({"_id": ObjectId(draft_id)}).deleted_count
+    if not ok:
+        raise HTTPException(404, "Draft not found")
+    return {"ok": True}
+
+@router.get("/drafts/{draft_id}/export")
+def export_draft_zip(draft_id: str):
+    d = db.drafts.find_one({"_id": ObjectId(draft_id)})
+    if not d:
+        raise HTTPException(404, "Draft not found")
+
+    mem = BytesIO()
+    with ZipFile(mem, "w") as z:
+        caption_text = (d.get("caption") or "").strip()
+        tags = d.get("hashtags", [])
+        if tags:
+            caption_text += ("\n\n" + " ".join("#"+t for t in tags))
+        z.writestr("caption.txt", caption_text or "Add your caption here")
+
+        fname = d.get("filename")
+        if fname:
+            path = os.path.join(UPLOAD_DIR, fname)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    z.writestr("image.jpg", f.read())
+
+        meta = (
+            '{\n'
+            f'  "title": "{d.get("title","")}",\n'
+            f'  "category": "{d.get("category","")}",\n'
+            f'  "status": "{d.get("status","draft")}"\n'
+            '}'
+        )
+        z.writestr("meta.json", meta)
+
+    mem.seek(0)
+    return StreamingResponse(
+        mem, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="manual_post_kit_{draft_id}.zip"'}
+    )
+
+@router.post("/drafts/{draft_id}/regen_caption", response_model=Draft)
+async def regen_caption(draft_id: str):
+    d = db.drafts.find_one({"_id": ObjectId(draft_id)})
+    if not d:
+        raise HTTPException(404, "Draft not found")
+    try:
+        try:
+            cap, tags = await gen_caption_and_tags(
+                topic=d.get("title",""), category=d.get("category","lifestyle"),
+                brand_tag="fitai", custom_text=d.get("customText","")
+            )
+        except TypeError:
+            cap, tags = await gen_caption_and_tags(
+                topic=d.get("title",""), category=d.get("category","lifestyle"),
+                brand_tag="fitai"
+            )
+    except Exception:
+        cap = (d.get("title") or "New post") + " — save it!"
+        tags = d.get("hashtags") or ["fitai"]
+    doc = db.drafts.find_one_and_update(
+        {"_id": ObjectId(draft_id)}, {"$set": {"caption": cap, "hashtags": tags}}, return_document=True
+    )
+    return Draft(**_serialize(doc))
+
+@router.post("/drafts/{draft_id}/regen_image", response_model=Draft)
+async def regen_image(draft_id: str):
+    d = db.drafts.find_one({"_id": ObjectId(draft_id)})
+    if not d:
+        raise HTTPException(404, "Draft not found")
+
+    persona = get_persona(d.get("personaId","") or "")
+    watermark = (persona.visual.get("watermark") if persona else "AI Studio")
+    style = d.get("imageStyle") or d.get("style") or "clean"
+    subtitle = "#" + (d.get("hashtags",[None])[0] or (persona.brand_tag if persona else "fitai"))
+
+    # render new
+    img_bytes = render_composite(style, title=d.get("title",""), subtitle=subtitle, watermark=watermark)
+
+    # remove old file
+    old = d.get("filename")
+    if old:
+        old_path = os.path.join(UPLOAD_DIR, old)
+        if os.path.exists(old_path):
+            try: os.remove(old_path)
+            except: pass
+
+    fname = f"{uuid4()}.jpg"
+    out_path = os.path.join(UPLOAD_DIR, fname)
+    with open(out_path, "wb") as f:
+        f.write(img_bytes)
+
+    doc = db.drafts.find_one_and_update(
+        {"_id": ObjectId(draft_id)},
+        {"$set": {"filename": fname, "previewUrl": f"{settings.BASE_URL}/uploads/{fname}"}},
+        return_document=True,
+    )
+    return Draft(**_serialize(doc))
