@@ -7,8 +7,8 @@ services:
     env_file:
       - ../backend/.env
     volumes:
-      - ../backend/app:/app/app:rw
-      - ../uploads:/app/uploads:rw
+      - ./backend:/app:rw            # kód a /app alá, NEM /app/app
+      - ./uploads:/app/uploads:rw
     depends_on:
       - mongo
 
@@ -27,6 +27,6 @@ services:
 
   mongo:
     image: mongo:7
-    ports: ["27017:27017"]
+    ports: ["27018:27017"]
     volumes:
       - ../mongodb-data:/data/db
