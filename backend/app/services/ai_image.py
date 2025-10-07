@@ -1,74 +1,125 @@
-import base64
-import io
-from typing import Optional
+# backend/app/services/ai_image.py
+import io, uuid, time
+from pathlib import Path
 import httpx
+from fastapi import HTTPException
 from PIL import Image
-from app.core.settings import settings
+from ..core.settings import settings
 
-# Prompt sablon – ízléses, non-NSFW fitness lifestyle
-def _build_prompt(title: str, style_hint: Optional[str] = None) -> str:
-    base = (
-    "Instagram fitness lifestyle photo of an adult woman (age 25-35) training in a gym; "
-    "realistic, clean composition, soft lighting, tasteful, non-NSFW; "
-    "athletic outfit suitable for workout, no cleavage, no midriff focus; "
-    "portrait orientation; editorial quality."
-    )
-    if style_hint:
-        base += f" Style: {style_hint}."
-    base += f" Concept/topic: {title}."
-    # negatív kérések promptban (OpenAI Images nem támogat külön negative promptot)
-    base += " Avoid: nsfw, watermark, overexposed, text overlays, deformed hands."
-    return base
+MEDIA_DIR = Path("/app/uploads/images").resolve()
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-async def generate_image_bytes(title: str, style_hint: Optional[str] = None) -> bytes:
-    """
-    OpenAI Images (gpt-image-1) használata.
-    Kérünk portrait méretet (1024x1536), majd pontosan 1080x1350-re igazítjuk.
-    """
-    if not settings.OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set")
 
-    headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
-    payload = {
-        "model": "gpt-image-1",
-        "prompt": _build_prompt(title, style_hint),
-        "n": 1,
-        "size": "1024x1024",  # portrait
+HF_ENDPOINT = lambda model: f"https://api-inference.huggingface.co/models/{model}"
+
+# --- ÚJ: prompt-építő (persona + topic + trend-tags) ---
+def build_prompt(*, persona_name: str | None, topic: str, trend_tags: list[str] | None) -> tuple[str, str]:
+    tags = ", ".join([t for t in (trend_tags or []) if t])  # "gym, beginner, form"
+    subject = f"{topic.strip()}"
+    context = "modern lifestyle photo, soft natural light, editorial composition, shallow depth of field, high detail"
+    persona_hint = f"portrait of {persona_name}" if persona_name else "portrait"
+    positive = f"{persona_hint}, {subject}{', ' + tags if tags else ''}, {context}"
+    negative = "blurry, lowres, overexposed, text, watermark, logo, deformed hands, extra fingers, bad anatomy, jpeg artifacts"
+    return positive, negative
+
+# --- KISMÉRTÉKŰ módosítás: a meglévő generate_sdxl kapjon width/height/steps/guidance-t ---
+async def generate_sdxl(prompt: str, negative_prompt: str | None = None,
+                        width: int = 896, height: int = 1152,
+                        steps: int = 28, guidance: float = 7.5) -> tuple[str, str]:
+    if not settings.HF_TOKEN:
+        raise HTTPException(500, detail="HF_TOKEN not configured")
+
+    headers = {
+        "Authorization": f"Bearer {settings.HF_TOKEN}",
+        "Accept": "image/png",
+        "Content-Type": "application/json"
+    }
+    body = {
+        "inputs": prompt,
+        "parameters": {
+            "negative_prompt": negative_prompt or "blurry, deformed hands, extra fingers, watermark, text",
+            "width": width,
+            "height": height,
+            "num_inference_steps": steps,
+            "guidance_scale": guidance,
+            "seed": int(time.time() * 1000) % 2_000_000_000,
+        },
+        "options": {"wait_for_model": True}
     }
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post("https://api.openai.com/v1/images/generations",
-                          headers=headers, json=payload)
+    async with httpx.AsyncClient(timeout=90) as client:
+        r = await client.post(HF_ENDPOINT(settings.SDXL_MODEL), headers=headers, json=body)
+        if r.status_code != 200:
+            raise HTTPException(502, detail=r.text)
+        png_bytes = r.content
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    img_id = str(uuid.uuid4())
+    out_path = MEDIA_DIR / f"{img_id}.jpg"
+    img.save(out_path, format="JPEG", quality=90)
+    print("Saved file:", out_path)
+
+    url = f"{settings.BASE_URL}/uploads/images/{img_id}.jpg"
+    return img_id, url
+
+# --- ÚJ: SDXL img2img (HF serverless, multipart/form-data) ---
+async def generate_sdxl_img2img(
+    init_image_path: str,
+    prompt: str,
+    negative_prompt: str | None = None,
+    strength: float = 0.7,
+    guidance: float = 7.5,
+    steps: int = 30,
+) -> tuple[str, str]:
+    if not settings.HF_TOKEN:
+        raise HTTPException(500, detail="HF_TOKEN not configured")
+
+    model = settings.SDXL_MODEL
+    url = HF_ENDPOINT(model)
+
+    # 1) Képet megnyitjuk és **PNG-be** re-encode-oljuk, hogy a MIME és a tartalom is stimmeljen
     try:
-        r.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        # fontos: a response body tele van hasznos hibával
-        raise RuntimeError(f"image api error {r.status_code}: {r.text}") from e
-    data = r.json()
+        from PIL import Image
+        import io, json, uuid, httpx
+        img = Image.open(init_image_path).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        png_bytes = buf.read()
+    except FileNotFoundError:
+        raise HTTPException(400, detail=f"Init image not found: {init_image_path}")
+    except Exception as e:
+        raise HTTPException(400, detail=f"Init image error: {e}")
 
-    b64 = data["data"][0]["b64_json"]
-    raw = base64.b64decode(b64)
+    files = {
+        # MIME és fájlnév is PNG
+        "image": ("init.png", png_bytes, "image/png"),
+        "inputs": (
+            None,
+            json.dumps({
+                "prompt": prompt,
+                "strength": strength,
+                "guidance_scale": guidance,
+                "num_inference_steps": steps,
+                "negative_prompt": negative_prompt or "blurry, deformed hands, watermark, text",
+            }),
+            "application/json",
+        ),
+        # HF serverless opciók: várjunk a modelre
+        "options": (None, json.dumps({"wait_for_model": True}), "application/json"),
+    }
+    headers = {"Authorization": f"Bearer {settings.HF_TOKEN}", "Accept": "image/png"}
 
-    # pontos Insta-portrait (1080x1350) előállítása
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
-    target_w, target_h = 1080, 1350
-    # aránymegőrzés + középre vágás
-    img_ratio = img.width / img.height
-    target_ratio = target_w / target_h
-    if img_ratio > target_ratio:
-        # túl széles → magasságra illesztünk, bal-jobb vágás
-        new_h = target_h
-        new_w = int(new_h * img_ratio)
-    else:
-        # túl magas → szélességre illesztünk, fel-le vágás
-        new_w = target_w
-        new_h = int(new_w / img_ratio)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
+    async with httpx.AsyncClient(timeout=300) as client:
+        r = await client.post(url, headers=headers, files=files)
+        if r.status_code != 200:
+            # LOG segítség: dobd vissza a HF üzenetét, ezt látod majd a backend logban
+            raise HTTPException(502, detail=f"HF {r.status_code}: {r.text[:400]}")
 
-    left = (new_w - target_w) // 2
-    top = (new_h - target_h) // 2
-    img = img.crop((left, top, left + target_w, top + target_h))
-
-    out = io.BytesIO()
-    img.save(out, format="JPEG", quality=90)
-    return out.getvalue()
+    # mentés mint eddig
+    out = Image.open(io.BytesIO(r.content)).convert("RGB")
+    img_id = str(uuid.uuid4())
+    out_path = MEDIA_DIR / f"{img_id}.jpg"
+    out.save(out_path, format="JPEG", quality=90)
+    url = f"{settings.BASE_URL}/uploads/images/{img_id}.jpg"
+    return img_id, url

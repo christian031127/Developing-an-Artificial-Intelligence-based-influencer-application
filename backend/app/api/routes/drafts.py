@@ -13,8 +13,9 @@ from bson import ObjectId
 from app.core.settings import settings
 from app.core.db import db
 from app.core.files import UPLOAD_DIR
-from app.services.images.composite import render_composite
+
 from app.services.ai_text import gen_caption_and_tags
+from app.services.ai_image import generate_sdxl_img2img, build_prompt
 
 router = APIRouter(tags=["drafts"])
 
@@ -30,8 +31,7 @@ class DraftCreate(BaseModel):
     caption: str = ""
     hashtags: List[str] = Field(default_factory=list)
     customText: Optional[str] = None
-    imageStyle: Optional[str] = None
-    personaId: str  # <<< KÖTELEZŐ
+    personaId: str
 
 class Draft(DraftCreate):
     id: str
@@ -68,14 +68,13 @@ def _load_persona_or_404(persona_id: str) -> dict:
 async def create_draft(body: DraftCreate):
     persona = _load_persona_or_404(body.personaId)
 
-    # 1) caption + hashtags (AI → fallback), tone + brand_tag a personából
+    # 1) Caption + hashtags (AI → fallback)
     caption = (body.caption or "").strip()
     hashtags = list(body.hashtags or [])
     if not caption or not hashtags:
         try:
             tone = persona.get("tone") or "friendly, concise"
             brand_tag = persona.get("brand_tag") or "brand"
-            # a korábbi gen_caption_and_tags signature-e maradhat
             cap, tags = await gen_caption_and_tags(
                 topic=body.title,
                 category=body.category,
@@ -88,31 +87,54 @@ async def create_draft(body: DraftCreate):
             caption = caption or "Save this for later! 💡"
             hashtags = hashtags or ["post","daily","ideas","trending"]
 
-    # 2) kép (composite – olcsó)
-    style = (body.imageStyle or persona.get("default_image_style") or "clean")
-    watermark = (persona.get("watermark") or persona.get("name") or "Studio")
-    subtitle = "#" + (hashtags[0] if hashtags else (persona.get("brand_tag") or "brand"))
-    img_bytes = render_composite(style, title=body.title, subtitle=subtitle, watermark=watermark)
+    # 2) Persona portré → init_path
+    init_path = None
+    if persona.get("filename"):
+        init_path = f"/app/uploads/characters/{persona['filename']}"
+    elif persona.get("imageUrl"):
+        from urllib.parse import urlparse
+        parsed = urlparse(persona["imageUrl"])
+        if parsed.path.startswith("/uploads/"):
+            init_path = "/app" + parsed.path
+    if not init_path:
+        raise HTTPException(400, "Persona portrait not found; cannot run img2img.")
 
-    fname = f"{uuid4()}.jpg"
-    out_path = os.path.join(UPLOAD_DIR, fname)
-    with open(out_path, "wb") as f:
-        f.write(img_bytes)
+    # 3) Prompt (persona + topic + trendTags≈hashtags)
+    positive, negative = build_prompt(
+        persona_name=persona.get("name"),
+        topic=body.title,
+        trend_tags=hashtags
+    )
 
+    # 4) SDXL img2img (HF serverless)
+    try:
+        _, url = await generate_sdxl_img2img(
+            init_image_path=init_path,
+            prompt=positive,
+            negative_prompt=negative,
+            strength=0.7,
+            guidance=7.5,
+            steps=30,
+        )
+    except HTTPException as e:
+        # ideiglenes debug
+        print("IMG2IMG ERROR:", e.detail)
+        raise
+
+    # 5) Mentés
     doc = body.model_dump()
     doc.update({
         "caption": caption,
         "hashtags": hashtags,
         "status": "draft",
-        "filename": fname,
-        "previewUrl": f"{settings.BASE_URL}/uploads/{fname}",
+        "previewUrl": url,
     })
     res = db.drafts.insert_one(doc)
     return Draft(id=str(res.inserted_id), **doc)
 
 @router.patch("/drafts/{draft_id}", response_model=Draft)
 def patch_draft(draft_id: str, body: dict):
-    allowed = {"imageStyle","personaId","caption","hashtags","title","category","customText"}
+    allowed = {"personaId","caption","hashtags","title","category","customText"}
     update = {k:v for k,v in (body or {}).items() if k in allowed}
     if not update:
         raise HTTPException(400, "No updatable fields provided")
@@ -140,42 +162,6 @@ def delete_draft(draft_id: str):
     if not ok:
         raise HTTPException(404, "Draft not found")
     return {"ok": True}
-
-@router.get("/drafts/{draft_id}/export")
-def export_draft_zip(draft_id: str):
-    d = db.drafts.find_one({"_id": ObjectId(draft_id)})
-    if not d:
-        raise HTTPException(404, "Draft not found")
-
-    mem = BytesIO()
-    with ZipFile(mem, "w") as z:
-        caption_text = (d.get("caption") or "").strip()
-        tags = d.get("hashtags", [])
-        if tags:
-            caption_text += ("\n\n" + " ".join("#"+t for t in tags))
-        z.writestr("caption.txt", caption_text or "Add your caption here")
-
-        fname = d.get("filename")
-        if fname:
-            path = os.path.join(UPLOAD_DIR, fname)
-            if os.path.exists(path):
-                with open(path, "rb") as f:
-                    z.writestr("image.jpg", f.read())
-
-        meta = (
-            '{\n'
-            f'  "title": "{d.get("title","")}",\n'
-            f'  "category": "{d.get("category","")}",\n'
-            f'  "status": "{d.get("status","draft")}"\n'
-            '}'
-        )
-        z.writestr("meta.json", meta)
-
-    mem.seek(0)
-    return StreamingResponse(
-        mem, media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="manual_post_kit_{draft_id}.zip"'}
-    )
 
 @router.post("/drafts/{draft_id}/regen_caption", response_model=Draft)
 async def regen_caption(draft_id: str):
@@ -234,3 +220,71 @@ async def regen_image(draft_id: str):
         return_document=True,
     )
     return Draft(**_serialize(doc))
+
+# --- ÚJ: SDXL AI photo a drafthoz (olcsó TEST mód) ---
+@router.post("/drafts/{draft_id}/ai_photo", response_model=Draft)
+async def ai_photo(draft_id: str):
+    d = db.drafts.find_one({"_id": ObjectId(draft_id)})
+    if not d:
+        raise HTTPException(404, "Draft not found")
+
+    persona = _load_persona_or_404(d.get("personaId"))
+    from app.services.ai_image import build_prompt, generate_sdxl
+    title = d.get("title","").strip()
+    # trend tag-eket vegyük a draft hashtags-ből, ha van
+    trend_tags = d.get("hashtags") or []
+
+    positive, negative = build_prompt(
+        persona_name=persona.get("name"),
+        topic=title or "lifestyle post",
+        trend_tags=trend_tags
+    )
+
+    # SDXL txt2img (olcsó)
+    _, url = await generate_sdxl(positive, negative_prompt=negative, width=896, height=1152, steps=26, guidance=7.0)
+
+    # previewUrl frissítése (filename-t nem kötelező eltárolni, mert az URL tartós)
+    doc = db.drafts.find_one_and_update(
+        {"_id": ObjectId(draft_id)},
+        {"$set": {"previewUrl": url}},
+        return_document=True,
+    )
+    return Draft(**_serialize(doc))
+
+# --- igazából nem kell az export zip---
+@router.get("/drafts/{draft_id}/export")
+def export_draft_zip(draft_id: str):
+    d = db.drafts.find_one({"_id": ObjectId(draft_id)})
+    if not d:
+        raise HTTPException(404, "Draft not found")
+
+    mem = BytesIO()
+    with ZipFile(mem, "w") as z:
+        caption_text = (d.get("caption") or "").strip()
+        tags = d.get("hashtags", [])
+        if tags:
+            caption_text += ("\n\n" + " ".join("#"+t for t in tags))
+        z.writestr("caption.txt", caption_text or "Add your caption here")
+
+        fname = d.get("filename")
+        if fname:
+            path = os.path.join(UPLOAD_DIR, fname)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    z.writestr("image.jpg", f.read())
+
+        meta = (
+            '{\n'
+            f'  "title": "{d.get("title","")}",\n'
+            f'  "category": "{d.get("category","")}",\n'
+            f'  "status": "{d.get("status","draft")}"\n'
+            '}'
+        )
+        z.writestr("meta.json", meta)
+
+    mem.seek(0)
+    return StreamingResponse(
+        mem, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="manual_post_kit_{draft_id}.zip"'}
+    )
+

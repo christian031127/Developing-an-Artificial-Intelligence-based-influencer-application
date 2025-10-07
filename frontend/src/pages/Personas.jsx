@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import PersonaCard from "../components/PersonaCard";
 
 export default function Personas() {
-  const [tab, setTab] = useState("create"); // "my" | "create"
+  const [tab, setTab] = useState("my"); // "my" | "create"
   const [list, setList] = useState([]);
 
   // create form
@@ -40,7 +40,7 @@ export default function Personas() {
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Personas</h1>
+        <h1 className="text-2xl font-bold">KUKI</h1>
         <div className="flex gap-2">
           <button onClick={()=>setTab("my")} className={`btn btn-sm ${tab==="my"?"btn-primary":"btn-ghost"}`}>My personas</button>
           <button onClick={()=>setTab("create")} className={`btn btn-sm ${tab==="create"?"btn-primary":"btn-ghost"}`}>Create persona</button>

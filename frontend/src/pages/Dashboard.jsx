@@ -21,7 +21,6 @@ export default function Dashboard({ health }) {
   // personas + image style
   const [personas, setPersonas] = useState([]);
   const [personaId, setPersonaId] = useState("");
-  const [imageStyle, setImageStyle] = useState("clean"); // clean | gradient | polaroid
 
   const refreshDrafts = () => api.getDrafts().then(setDrafts).catch(() => setDrafts([]));
 
@@ -50,7 +49,6 @@ export default function Dashboard({ health }) {
         caption: "",
         hashtags: [],
         personaId,
-        imageStyle,
       });
       refreshDrafts();
     } finally { setCreatingId(null); }
@@ -67,7 +65,7 @@ export default function Dashboard({ health }) {
     setGenBusy(true);
     try {
       const keywords = selected.length ? selected : (customText.trim() ? [customText.trim()] : []);
-      await api.createDraftsFromKeywords({ keywords, customText, personaId, imageStyle });
+      await api.createDraftsFromKeywords({ keywords, customText, personaId });
       setSelected([]); setCustomText("");
       refreshDrafts();
     } finally { setGenBusy(false); }
@@ -102,20 +100,8 @@ export default function Dashboard({ health }) {
               ))}
             </select>
           </div>
-          <div>
-            <div className="text-sm font-medium mb-1">Image style</div>
-            <select
-              className="w-full rounded-xl border border-gray-200 p-2 text-sm"
-              value={imageStyle}
-              onChange={(e) => setImageStyle(e.target.value)}
-            >
-              <option value="clean">clean</option>
-              <option value="gradient">gradient</option>
-              <option value="polaroid">polaroid</option>
-            </select>
-          </div>
           <div className="text-xs text-gray-500">
-            Persona affects caption tone & watermark; Image style controls the composite preset.
+            Persona affects caption tone & watermark. The draft image is generated from the persona portrait.
           </div>
         </div>
       </div>

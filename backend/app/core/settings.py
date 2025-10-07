@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     TRENDS_WINDOW: str = "90d" # "7d" | "30d" | "90d"
     TRENDS_TTL_SECONDS: int = 24 * 3600  # cache: 24h
 
+
+    # Stable Diffusion (HuggingFace + StabilityAI)
+    HF_TOKEN: str | None = None
+    SDXL_MODEL: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    STABILITY_API_KEY: str | None = None
+    STABILITY_ENGINE: str = "sdxl-1024-v1-0"
+    MEDIA_DIR: str = "./uploads/images"
+
     class Config:
         env_file = ".env"
 

@@ -34,3 +34,6 @@ uploads/
 # Mongo data & uploads (DO NOT COMMIT)
 mongodb-data/
 uploads
+
+# Backend uploads mindig a docker futtatásakor létrejön ?!
+backend/uploads/

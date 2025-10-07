@@ -7,8 +7,8 @@ services:
     env_file:
       - ../backend/.env
     volumes:
-      - ./backend:/app:rw            # kód a /app alá, NEM /app/app
-      - ./uploads:/app/uploads:rw
+      - ../backend:/app:rw            # kód a /app alá, NEM /app/app
+      - ../uploads:/app/uploads:rw
     depends_on:
       - mongo
 
