@@ -19,12 +19,13 @@ export default function Sidebar({ current = "dashboard", onNavigate = () => {} }
 
       <nav className="p-3 space-y-1">
         <Item id="dashboard" label="Dashboard" badge="IG" />
-        <Item id="analytics" label="Analytics" badge="Beta" />
+        <Item id="feed" label="Feed" badge="Simulate" />
+        <Item id="analytics" label="Analytics" badge="Overall" />
         <Item id="personas" label="Personas" />
       </nav>
 
       <div className="mt-auto p-4 text-xs text-gray-500">
-        © {new Date().getFullYear()} FitAI
+        © {new Date().getFullYear()} Spertli Krisztián
       </div>
     </div>
   );

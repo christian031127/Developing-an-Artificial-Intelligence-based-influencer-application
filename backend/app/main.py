@@ -10,8 +10,8 @@ from app.api.routes.personas_db import router as personas_db_router
 from app.api.routes.drafts import router as drafts_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.trends import router as trends_router
-from app.api.routes.characters import router as characters_router
 from app.api.routes import images as images_router  # POST /api/images/generate
+from app.api.routes import agent
 
 app = FastAPI(title="AI Influencer API")
 
@@ -51,6 +51,6 @@ app.include_router(health_router, prefix="/api")
 app.include_router(drafts_router, prefix="/api", tags=["drafts"])
 app.include_router(analytics_router, prefix="/api", tags=["analytics"])
 app.include_router(trends_router, prefix="/api", tags=["trends"])
-app.include_router(characters_router, prefix="/api", tags=["characters"])
 app.include_router(personas_db_router, prefix="/api")
+app.include_router(agent.router)  # /api/agent
 app.include_router(images_router.router)  # /api/images/generate

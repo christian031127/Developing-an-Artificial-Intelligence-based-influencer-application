@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import ChartCard from "../components/ChartCard";
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 
-const COLORS = ["#6366F1","#22C55E","#F59E0B","#EF4444","#06B6D4","#A855F7"];
+const COLORS = ["#6366F1", "#22C55E", "#F59E0B", "#EF4444", "#06B6D4", "#A855F7"];
 
 export default function Analytics() {
   const [data, setData] = useState(null);
@@ -39,7 +39,7 @@ export default function Analytics() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* By Category – Pie */}
-        <ChartCard title="Drafts by category" subtitle="workout / meal / lifestyle">
+        <ChartCard title="Drafts by category" subtitle="Based on current draft categories">
           <div style={{ width: "100%", height: 260 }}>
             <ResponsiveContainer>
               <PieChart>

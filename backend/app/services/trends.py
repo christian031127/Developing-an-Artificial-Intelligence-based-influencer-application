@@ -1,89 +1,112 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple
-from datetime import datetime
+from typing import List, Dict
+from datetime import datetime, timezone
 import hashlib
 from pytrends.request import TrendReq
 from app.core.db import db
 from app.core.settings import settings
 
-_TIMEFRAME_MAP = {
-    "7d": "now 7-d",
-    "30d": "today 1-m",
-    "90d": "today 3-m",
+# pytrends 'pn' mapping a napi trending searches híváshoz
+_PN_MAP = {
+    "HU": "hungary",
+    "US": "united_states",
+    "GB": "united_kingdom",
+    "DE": "germany",
+    "FR": "france",
+    "ES": "spain",
+    "IT": "italy",
+    "PT": "portugal",
+    "PL": "poland",
+    "RO": "romania",
+    "SK": "slovakia",
+    "CZ": "czech_republic",
 }
 
-_DEFAULT_SEED = [
-    "leg day","glute workout","protein breakfast","meal prep","active rest",
-    "hypertrophy","budgeting","ETF","dividends","morning routine","productivity",
-    "deep work","HIIT","mobility","macro tracking","study hacks","minimalism",
-    "home workout","healthy snacks","strength training"
-]
+def _pn_for_geo(geo: str) -> str:
+    return _PN_MAP.get((geo or "").upper(), "united_states")
 
-def _cache_key(geo: str, window: str, seed: List[str]) -> str:
-    raw = f"{geo}|{window}|{'|'.join(seed)}"
+def _cache_key(geo: str, window: str) -> str:
+    raw = f"{geo}|{window}|TRENDING_ONLY"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
-def _select_top_unique(candidates: List[Tuple[str,int]], limit: int=20) -> List[str]:
-    seen, out = set(), []
-    for kw, score in sorted(candidates, key=lambda x: x[1], reverse=True):
-        k = kw.strip().lower()
-        if k and k not in seen:
-            seen.add(k)
-            out.append(kw)
-        if len(out) >= limit:
-            break
-    return out
+_DEFAULT_SEED = [
+    # general & education
+    "AI tools for students",
+    "thesis writing tips",
+    "time management",
+    "note-taking apps",
+    "study motivation",
+    # technology & economy
+    "latest AI trends",
+    "blockchain news",
+    "startup ideas",
+    "green tech",
+    "digital marketing",
+    # travel & culture
+    "budget travel",
+    "hidden gems Europe",
+    "remote work lifestyle",
+    "coffee culture",
+    "local food experiences",
+    # society & career
+    "mental health awareness",
+    "sustainable fashion",
+    "personal branding",
+    "career change",
+    "work-life balance",
+]
 
-def _timeframe(window: str) -> str:
-    return _TIMEFRAME_MAP.get(window, _TIMEFRAME_MAP[settings.TRENDS_WINDOW])
+def _last_cached_keywords() -> List[str]:
+    """Utolsó mentett kulcsszavak a Mongo cache-ből."""
+    doc = db.trends_cache.find_one(sort=[("createdAt", -1)])
+    if doc and isinstance(doc.get("payload"), dict):
+        arr = doc["payload"].get("keywords") or []
+        if isinstance(arr, list) and arr:
+            return [str(x) for x in arr][:25]
+    return []
 
-def fetch_trends_from_google(geo: str, window: str, seed: List[str]) -> Dict:
-    """
-    Pull 'rising' related queries for each seed keyword, dedupe, rank by score.
-    Returns { geo, window, keywords: [..], fetchedAt }
-    """
-    tf = _timeframe(window)
+def _today_trending_keywords(geo: str, limit: int = 25) -> List[str]:
+    """Napi 'trending searches' az adott országra."""
     py = TrendReq(hl="en-US", tz=0)
-    candidates: List[Tuple[str,int]] = []
+    pn = _pn_for_geo(geo)
+    try:
+        df = py.trending_searches(pn=pn)
+        kws = [str(x).strip() for x in df.iloc[:, 0].tolist() if str(x).strip()]
+        return kws[:limit]
+    except Exception:
+        return []
 
-    # Pull related rising queries per seed
-    for term in seed:
-        try:
-            py.build_payload([term], timeframe=tf, geo=geo)
-            rq = py.related_queries()
-            # {'term': {'top': df, 'rising': df}}
-            if term in rq and rq[term] and rq[term].get("rising") is not None:
-                df = rq[term]["rising"]
-                # df columns: 'query','value'
-                for row in df.itertuples(index=False):
-                    q = str(row.query)
-                    v = int(getattr(row, "value", 50))
-                    candidates.append((q, v))
-        except Exception:
-            # swallow term-level errors (rate limits, etc.)
-            continue
+def fetch_trends_from_google(geo: str, window: str) -> Dict:
+    keywords = _today_trending_keywords(geo=geo, limit=25)
+    if not keywords:
+        keywords = _last_cached_keywords() or _DEFAULT_SEED
 
-    keywords = _select_top_unique(candidates, limit=20)
+    # ÚJ: deduplikálás + vágás + végső garancia
+    seen = set()
+    keywords = [clean for orig in keywords if (clean := str(orig).strip()) and (clean.lower() not in seen and not seen.add(clean.lower()))]
+    if not keywords:
+        keywords = _DEFAULT_SEED[:]
+
     return {
         "geo": geo,
         "window": window,
-        "keywords": keywords,
-        "fetchedAt": datetime.utcnow().isoformat() + "Z",
+        "keywords": keywords[:25],
+        "fetchedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "mode": "today_trending",
     }
 
-def get_trends(geo: str, window: str, seed: List[str]) -> Dict:
-    """
-    Cache-first (Mongo TTL). Cache key = sha1(geo|window|seed).
-    """
-    key = _cache_key(geo, window, seed)
+
+def get_trends(geo: str, window: str) -> Dict:
+    """Cache-first (Mongo TTL). Ha nincs adat, újrafetch."""
+    key = _cache_key(geo, window)
     doc = db.trends_cache.find_one({"cacheKey": key})
     if doc and isinstance(doc.get("payload"), dict):
         return doc["payload"]
 
-    payload = fetch_trends_from_google(geo=geo, window=window, seed=seed)
+    payload = fetch_trends_from_google(geo=geo, window=window)
     db.trends_cache.update_one(
         {"cacheKey": key},
-        {"$set": {"payload": payload, "createdAt": datetime.utcnow()}},
+        {"$set": {"payload": payload, "createdAt": datetime.now(timezone.utc)}},
         upsert=True,
     )
     return payload

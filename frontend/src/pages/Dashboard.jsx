@@ -1,15 +1,11 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import IdeaCard from "../components/IdeaCard";
 import DraftCard from "../components/DraftCard";
 import EmptyState from "../components/EmptyState";
 import TrendChips from "../components/TrendChips";
 
-export default function Dashboard({ health }) {
-  const [ideas, setIdeas] = useState([]);
+export default function Dashboard() {
   const [drafts, setDrafts] = useState([]);
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [creatingId, setCreatingId] = useState(null);
   const [workingDraftId, setWorkingDraftId] = useState(null);
 
   // trends / selection
@@ -18,7 +14,7 @@ export default function Dashboard({ health }) {
   const [customText, setCustomText] = useState("");
   const [genBusy, setGenBusy] = useState(false);
 
-  // personas + image style
+  // personas
   const [personas, setPersonas] = useState([]);
   const [personaId, setPersonaId] = useState("");
 
@@ -34,26 +30,6 @@ export default function Dashboard({ health }) {
       .catch(() => setPersonas([]));
   }, []);
 
-  const loadIdeas = async () => {
-    setLoadingIdeas(true);
-    try { setIdeas(await api.getIdeas()); } finally { setLoadingIdeas(false); }
-  };
-
-  const createDraftFromIdea = async (idea) => {
-    setCreatingId(idea.id);
-    try {
-      await api.createDraft({
-        ideaId: idea.id,
-        title: idea.title,
-        category: idea.category,
-        caption: "",
-        hashtags: [],
-        personaId,
-      });
-      refreshDrafts();
-    } finally { setCreatingId(null); }
-  };
-
   const toggleTrend = (t) => {
     setSelected((prev) => (prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]));
   };
@@ -61,6 +37,7 @@ export default function Dashboard({ health }) {
   const clearAll = () => setSelected([]);
 
   const generateFromKeywords = async () => {
+    if (!personaId) { alert("Choose a persona before generating drafts."); return; }
     if (selected.length === 0 && !customText.trim()) return;
     setGenBusy(true);
     try {
@@ -77,14 +54,10 @@ export default function Dashboard({ health }) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Studio</h1>
-          <p className="text-sm text-gray-500">Backend health: {health}</p>
         </div>
-        <button onClick={loadIdeas} disabled={loadingIdeas} className="btn btn-md btn-primary disabled:opacity-50">
-          {loadingIdeas ? "Loading ideas..." : "Load ideas"}
-        </button>
       </div>
 
-      {/* Persona & Image Style */}
+      {/* Persona selector */}
       <div className="card">
         <div className="card-pad grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
           <div>
@@ -96,12 +69,12 @@ export default function Dashboard({ health }) {
             >
               <option value="">(None)</option>
               {personas.map(p => (
-                <option key={p.id} value={p.id}>{p.name} — {p.id}</option>
+                <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           </div>
           <div className="text-xs text-gray-500">
-            Persona affects caption tone & watermark. The draft image is generated from the persona portrait.
+            The draft image is generated from the persona portrait. Without a persona we skip image generation.
           </div>
         </div>
       </div>
@@ -112,7 +85,9 @@ export default function Dashboard({ health }) {
           <div className="flex items-center justify-between">
             <div>
               <div className="font-semibold">Trends & Keywords</div>
-              <div className="text-sm text-gray-500">Pick trending keywords or type your own text, then generate drafts.</div>
+              <div className="text-sm text-gray-500">
+                Select trends or add your own keyword, then generate drafts.
+              </div>
             </div>
             <div className="flex gap-2">
               <button onClick={selectAll} className="btn btn-sm btn-ghost">Select all</button>
@@ -133,7 +108,7 @@ export default function Dashboard({ health }) {
             <div className="flex items-start gap-2">
               <button
                 onClick={generateFromKeywords}
-                disabled={genBusy}
+                disabled={genBusy || !personaId}
                 className="btn btn-md btn-primary disabled:opacity-50"
               >
                 {genBusy ? "Generating…" : "Generate drafts"}
@@ -142,20 +117,6 @@ export default function Dashboard({ health }) {
           </div>
         </div>
       </div>
-
-      {/* Ideas */}
-      {ideas.length === 0 ? (
-        <EmptyState
-          title="No ideas yet"
-          subtitle="Click 'Load ideas' or use Trends & Keywords above."
-        />
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {ideas.map((i) => (
-            <IdeaCard key={i.id} idea={i} onCreate={createDraftFromIdea} busy={creatingId === i.id} />
-          ))}
-        </div>
-      )}
 
       {/* Drafts */}
       <div className="flex items-center justify-between">
@@ -166,7 +127,7 @@ export default function Dashboard({ health }) {
       {drafts.length === 0 ? (
         <EmptyState
           title="No drafts yet"
-          subtitle="Generate a draft from trends or an idea to see it here."
+          subtitle="Generate a draft from trends or your own keyword to see it here."
         />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

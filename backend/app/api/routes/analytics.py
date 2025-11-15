@@ -1,5 +1,5 @@
 from typing import List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from fastapi import APIRouter
 
@@ -7,41 +7,82 @@ from app.core.db import db
 
 router = APIRouter()
 
+
 def _last_days(n: int = 7):
-    today = datetime.utcnow().date()
-    return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n-1, -1, -1)]
+    today = datetime.now(timezone.utc).date()
+    return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n - 1, -1, -1)]
+
 
 @router.get("/analytics")
 def analytics():
-    CATS = ["workout", "meal", "lifestyle"]
-    STAT = ["draft", "approved"]
+    # --- BY CATEGORY: dinamikusan, a draftokból kiolvasva ---
+    # ha nincs category mező, "uncategorized" néven jelenik meg
+    by_cat = list(
+        db.drafts.aggregate(
+            [
+                {
+                    "$group": {
+                        "_id": {"$ifNull": ["$category", "uncategorized"]},
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$project": {"category": "$_id", "_id": 0, "count": 1}},
+                {"$sort": {"count": -1, "category": 1}},
+            ]
+        )
+    )
 
-    by_cat_raw = list(db.drafts.aggregate([
-        {"$group": {"_id": "$category", "count": {"$sum": 1}}},
-        {"$project": {"category": "$_id", "_id": 0, "count": 1}}
-    ]))
-    by_cat_map = {x["category"]: x["count"] for x in by_cat_raw}
-    by_cat = [{"category": c, "count": by_cat_map.get(c, 0)} for c in CATS]
+    # --- BY STATUS: draft / approved (plusz bármi egyéb, ha lenne) ---
+    by_status = list(
+        db.drafts.aggregate(
+            [
+                {
+                    "$group": {
+                        "_id": {"$ifNull": ["$status", "draft"]},
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$project": {"status": "$_id", "_id": 0, "count": 1}},
+                {"$sort": {"status": 1}},
+            ]
+        )
+    )
 
-    by_status_raw = list(db.drafts.aggregate([
-        {"$group": {"_id": "$status", "count": {"$sum": 1}}},
-        {"$project": {"status": "$_id", "_id": 0, "count": 1}}
-    ]))
-    by_status_map = {x["status"]: x["count"] for x in by_status_raw}
-    by_status = [{"status": s, "count": by_status_map.get(s, 0)} for s in STAT]
-
+    # --- PER DAY (utolsó 7 nap) ---
     day_keys = _last_days(7)
-    per_day_map = {k: 0 for k in day_keys}
-    since = datetime.utcnow() - timedelta(days=6)
-    per_day_raw = list(db.drafts.aggregate([
-        {"$match": {"_id": {"$gte": ObjectId.from_datetime(since)}}},
-        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": {"$toDate": "$_id"}}}, "count": {"$sum": 1}}},
-        {"$project": {"day": "$_id", "_id": 0, "count": 1}}
-    ]))
+    per_day_map = dict.fromkeys(day_keys, 0)
+    since = (datetime.now(timezone.utc) - timedelta(days=6)).replace(tzinfo=None)
+
+    per_day_raw = list(
+        db.drafts.aggregate(
+            [
+                {"$match": {"_id": {"$gte": ObjectId.from_datetime(since)}}},
+                {
+                    "$group": {
+                        "_id": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%d",
+                                "date": {"$toDate": "$_id"},
+                            }
+                        },
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$project": {"day": "$_id", "_id": 0, "count": 1}},
+            ]
+        )
+    )
     for row in per_day_raw:
         if row["day"] in per_day_map:
             per_day_map[row["day"]] = row["count"]
     per_day = [{"day": k, "count": per_day_map[k]} for k in day_keys]
 
-    total = sum(x["count"] for x in by_cat)
-    return {"total": total, "byCategory": by_cat, "byStatus": by_status, "perDay": per_day}
+    # Összes draft száma – minden státuszra
+    total = sum(x["count"] for x in by_status)
+
+    return {
+        "total": total,
+        "byCategory": by_cat,
+        "byStatus": by_status,
+        "perDay": per_day,
+    }

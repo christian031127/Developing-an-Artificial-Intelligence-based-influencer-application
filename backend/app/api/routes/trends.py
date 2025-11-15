@@ -2,7 +2,7 @@ from typing import Optional
 from datetime import datetime
 from fastapi import APIRouter, Query
 from app.core.settings import settings
-from app.services.trends import get_trends, _DEFAULT_SEED
+from app.services.trends import get_trends
 
 router = APIRouter()
 
@@ -10,17 +10,18 @@ router = APIRouter()
 def trends(
     geo: str = Query(default=settings.TRENDS_GEO),
     window: str = Query(default=settings.TRENDS_WINDOW, pattern="^(7d|30d|90d)$"),
-    seed: Optional[str] = Query(default=None, description="Comma-separated seed terms")
+    seed: Optional[str] = Query(default=None, description="(Ignored)"),
 ):
-    seed_terms = [s.strip() for s in (seed.split(",") if seed else _DEFAULT_SEED) if s.strip()]
-    try:
-        return get_trends(geo=geo, window=window, seed=seed_terms)
-    except Exception:
-        # graceful fallback
-        return {
-            "geo": geo,
-            "window": window,
-            "keywords": seed_terms[:20],
-            "fetchedAt": datetime.utcnow().isoformat() + "Z",
-            "note": "fallback: pytrends unavailable",
-        }
+    """
+    Mindig a napi országos trending searches-t adja vissza (max 25).
+    A 'seed' paramétert figyelmen kívül hagyjuk.
+    Válasz:
+      { geo, window, keywords: [...], fetchedAt }
+    """
+    payload = get_trends(geo=geo, window=window)
+    return {
+        "geo": payload.get("geo", geo),
+        "window": payload.get("window", window),
+        "keywords": payload.get("keywords", [])[:25],
+        "fetchedAt": payload.get("fetchedAt", datetime.utcnow().isoformat() + "Z"),
+    }

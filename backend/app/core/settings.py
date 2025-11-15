@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 
     # LLM key for captions/hashtags (cheap)
     OPENAI_API_KEY: str | None = None
+    OPENAI_IMAGE_MODEL: str = "gpt-image-1"
+    OPENAI_TEXT_MODEL: str = "gpt-4o-mini"
 
     # Feature flags (keep images cheap during dev)
     USE_AI_IMAGES: bool = False
@@ -27,6 +29,7 @@ class Settings(BaseSettings):
     STABILITY_API_KEY: str | None = None
     STABILITY_ENGINE: str = "sdxl-1024-v1-0"
     MEDIA_DIR: str = "./uploads/images"
+    HF_IMG2IMG_FALLBACKS: str = ""
 
     class Config:
         env_file = ".env"
